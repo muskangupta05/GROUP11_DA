@@ -7,28 +7,18 @@ from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings("ignore")
 
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression, Ridge
-from sklearn.tree import DecisionTreeClassifier, export_text
-from sklearn.svm import SVC
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.naive_bayes import GaussianNB
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, roc_curve, classification_report, confusion_matrix
 )
-from sklearn.cluster import KMeans, AgglomerativeClustering
+from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-from scipy.cluster.hierarchy import dendrogram, linkage
-from xgboost import XGBRegressor, XGBClassifier
+from xgboost import XGBRegressor
 from mlxtend.frequent_patterns import apriori, association_rules
 from mlxtend.preprocessing import TransactionEncoder
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import io
-import base64
 
 from utils import (
     load_and_preprocess, get_feature_cols, prepare_splits, get_arm_transactions,
@@ -107,37 +97,6 @@ def train_all_models(df_raw):
     lr = LogisticRegression(max_iter=1000, random_state=42)
     lr.fit(X_train_sc, yc_train)
 
-    # Classification — Decision Tree
-    dt = DecisionTreeClassifier(max_depth=5, min_samples_split=20, random_state=42)
-    dt.fit(X_train, yc_train)
-    dt_pred = dt.predict(X_test)
-    dt_prob = dt.predict_proba(X_test)[:, 1]
-
-    # Classification — SVM
-    svm = SVC(probability=True, kernel="rbf", random_state=42, C=1.0)
-    svm.fit(X_train_sc, yc_train)
-    svm_pred = svm.predict(X_test_sc)
-    svm_prob = svm.predict_proba(X_test_sc)[:, 1]
-
-    # Classification — KNN
-    knn = KNeighborsClassifier(n_neighbors=7)
-    knn.fit(X_train_sc, yc_train)
-    knn_pred = knn.predict(X_test_sc)
-    knn_prob = knn.predict_proba(X_test_sc)[:, 1]
-
-    # Classification — Naive Bayes
-    nb = GaussianNB()
-    nb.fit(X_train_sc, yc_train)
-    nb_pred = nb.predict(X_test_sc)
-    nb_prob = nb.predict_proba(X_test_sc)[:, 1]
-
-    # Classification — XGBoost Classifier
-    xgbc = XGBClassifier(n_estimators=100, max_depth=5, learning_rate=0.1,
-                         random_state=42, verbosity=0, eval_metric="logloss")
-    xgbc.fit(X_train, yc_train)
-    xgbc_pred = xgbc.predict(X_test)
-    xgbc_prob = xgbc.predict_proba(X_test)[:, 1]
-
     # Regression — XGBoost
     xgb = XGBRegressor(n_estimators=200, max_depth=6, learning_rate=0.05,
                        random_state=42, verbosity=0)
@@ -166,34 +125,12 @@ def train_all_models(df_raw):
     df["pca_x"] = X_pca[:, 0]
     df["pca_y"] = X_pca[:, 1]
 
-    # Clustering — Hierarchical (Agglomerative) k=5
-    hc = AgglomerativeClustering(n_clusters=5, linkage="ward")
-    hc_labels = hc.fit_predict(X_cl_sc)
-    df["hc_cluster"] = hc_labels
-
     # Assign spend prediction to full df
     X_all_sc = scaler.transform(df[feat_cols].fillna(0))
     df["pred_spend"] = xgb.predict(df[feat_cols].fillna(0))
     df["pred_intent"] = rf.predict_proba(df[feat_cols].fillna(0))[:, 1]
 
-    # Linkage matrix for dendrogram (sample 300 for speed)
-    sample_idx = np.random.choice(len(X_cl_sc), min(300, len(X_cl_sc)), replace=False)
-    linkage_matrix = linkage(X_cl_sc[sample_idx], method="ward")
-
-    def clf_metrics(y_true, y_pred, y_prob):
-        return {
-            "acc": accuracy_score(y_true, y_pred),
-            "prec": precision_score(y_true, y_pred, zero_division=0),
-            "rec": recall_score(y_true, y_pred, zero_division=0),
-            "f1": f1_score(y_true, y_pred, zero_division=0),
-            "auc": roc_auc_score(y_true, y_prob),
-            "fpr": roc_curve(y_true, y_prob)[0],
-            "tpr": roc_curve(y_true, y_prob)[1],
-            "cm": confusion_matrix(y_true, y_pred),
-        }
-
     metrics = {
-        # Random Forest
         "rf_acc": accuracy_score(yc_test, rf_pred),
         "rf_prec": precision_score(yc_test, rf_pred, zero_division=0),
         "rf_rec": recall_score(yc_test, rf_pred, zero_division=0),
@@ -210,25 +147,9 @@ def train_all_models(df_raw):
         "yr_test": yr_test.values,
         "feat_cols": feat_cols,
         "feat_imp": pd.Series(rf.feature_importances_, index=feat_cols).sort_values(ascending=False),
-        # Decision Tree
-        "dt": clf_metrics(yc_test, dt_pred, dt_prob),
-        "dt_model": dt,
-        "dt_feat_imp": pd.Series(dt.feature_importances_, index=feat_cols).sort_values(ascending=False),
-        # SVM
-        "svm": clf_metrics(yc_test, svm_pred, svm_prob),
-        # KNN
-        "knn": clf_metrics(yc_test, knn_pred, knn_prob),
-        # Naive Bayes
-        "nb": clf_metrics(yc_test, nb_pred, nb_prob),
-        # XGBoost Classifier
-        "xgbc": clf_metrics(yc_test, xgbc_pred, xgbc_prob),
-        "xgbc_feat_imp": pd.Series(xgbc.feature_importances_, index=feat_cols).sort_values(ascending=False),
-        # Hierarchical clustering
-        "linkage_matrix": linkage_matrix,
-        "hc_labels": hc_labels,
     }
 
-    return df, rf, xgb, ridge, km, scaler, scaler_cl, pca_model, cluster_feats, metrics, dt, svm, knn, nb, xgbc, hc_labels
+    return df, rf, xgb, ridge, km, scaler, scaler_cl, pca, cluster_feats, metrics
 
 # ── ARM ────────────────────────────────────────────────────────────────────────
 
@@ -265,7 +186,6 @@ with st.sidebar:
 - Tab 4 — Product Intelligence  
 - Tab 5 — Revenue Predictor  
 - Tab 6 — Score New Leads  
-- Tab 7 — Advanced ML Models  
 """)
     st.markdown("---")
     st.caption("Moradabad Heritage × Wellness × Premium Living")
@@ -274,7 +194,7 @@ with st.sidebar:
 
 with st.spinner("🔄 Loading dataset and training models — this takes ~20 seconds on first run..."):
     df_raw = load_data(uploaded_file)
-    df, rf_model, xgb_model, ridge_model, km_model, scaler_main, scaler_cl, pca_model, cluster_feats, metrics, dt_model, svm_model, knn_model, nb_model, xgbc_model, hc_labels = train_all_models(df_raw)
+    df, rf_model, xgb_model, ridge_model, km_model, scaler_main, scaler_cl, pca_model, cluster_feats, metrics = train_all_models(df_raw)
     arm_rules, arm_transactions = run_arm(df_raw)
 
 st.markdown("# 🪔 Pitambari Brass — Analytics Dashboard")
@@ -282,14 +202,13 @@ st.caption(f"Dataset: **{len(df_raw):,} respondents** · 29 variables · Models 
 
 # ── TABS ───────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Overview",
     "👥 Customer Profiles",
     "🎯 Segment Explorer",
     "🛒 Product Intelligence",
     "💰 Revenue Predictor",
     "🚀 Score New Leads",
-    "🤖 Advanced ML Models",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1174,449 +1093,12 @@ and return a fully scored output CSV with **persona, intent score, predicted spe
            - **Recommended Action** (exact bundle + discount + channel)
         """)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 7 — ADVANCED ML MODELS
-# ══════════════════════════════════════════════════════════════════════════════
-
-with tab7:
-    st.markdown("## 🤖 Advanced ML Models — Decision Tree · SVM · KNN · Naive Bayes · XGBoost · Hierarchical Clustering · Forecasting")
-    st.caption("All models trained on the same dataset and evaluated on the same held-out test set (20%). Directly maps to course Sessions 3, 5, 6, 7.")
-
-    adv_tab1, adv_tab2, adv_tab3, adv_tab4 = st.tabs([
-        "🌳 Decision Tree",
-        "⚔️ Multi-Model Comparison",
-        "🌿 Hierarchical Clustering",
-        "📈 Forecasting"
-    ])
-
-    # ── DECISION TREE ──────────────────────────────────────────────────────────
-    with adv_tab1:
-        st.markdown("### 🌳 Decision Tree Classifier — Predicting Purchase Intent (Q25)")
-        st.markdown("""
-**Algorithm:** CART (Classification and Regression Trees) &nbsp;|&nbsp;
-**Max Depth:** 5 &nbsp;|&nbsp; **Min Samples Split:** 20 &nbsp;|&nbsp;
-**Purpose:** Interpretable rule-based classification for purchase intent
-""")
-        dt_m = metrics["dt"]
-
-        # Metrics row
-        mc1, mc2, mc3, mc4, mc5 = st.columns(5)
-        for col, val, lbl, col_hex in zip(
-            [mc1, mc2, mc3, mc4, mc5],
-            [f"{dt_m['acc']:.3f}", f"{dt_m['prec']:.3f}", f"{dt_m['rec']:.3f}", f"{dt_m['f1']:.3f}", f"{dt_m['auc']:.3f}"],
-            ["Accuracy", "Precision", "Recall", "F1-Score", "ROC-AUC"],
-            ["#7F77DD", "#1D9E75", "#EF9F27", "#D85A30", "#378ADD"],
-        ):
-            col.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-val" style="color:{col_hex}">{val}</div>
-                <div class="metric-lbl">{lbl}</div>
-            </div>""", unsafe_allow_html=True)
-
-        st.markdown("---")
-        col_a, col_b = st.columns(2)
-
-        with col_a:
-            # ROC Curve
-            fig_roc = go.Figure()
-            fig_roc.add_trace(go.Scatter(x=dt_m["fpr"], y=dt_m["tpr"],
-                mode="lines", name=f"Decision Tree (AUC={dt_m['auc']:.3f})",
-                line=dict(color="#7F77DD", width=2)))
-            fig_roc.add_trace(go.Scatter(x=[0,1], y=[0,1], mode="lines",
-                name="Random", line=dict(color="gray", dash="dash")))
-            fig_roc.update_layout(title="ROC Curve — Decision Tree",
-                xaxis_title="False Positive Rate", yaxis_title="True Positive Rate",
-                height=340, margin=dict(l=10,r=10,t=40,b=10))
-            st.plotly_chart(fig_roc, use_container_width=True)
-
-        with col_b:
-            # Confusion Matrix
-            cm = dt_m["cm"]
-            fig_cm = px.imshow(cm,
-                labels=dict(x="Predicted", y="Actual", color="Count"),
-                x=["Not Interested", "Interested"],
-                y=["Not Interested", "Interested"],
-                color_continuous_scale="Purples", text_auto=True,
-                title="Confusion Matrix — Decision Tree")
-            fig_cm.update_layout(height=340, margin=dict(l=10,r=10,t=40,b=10))
-            st.plotly_chart(fig_cm, use_container_width=True)
-
-        st.markdown("### 🌲 Top 15 Feature Importances — Decision Tree")
-        dt_imp = metrics["dt_feat_imp"].head(15).reset_index()
-        dt_imp.columns = ["Feature", "Importance"]
-        fig_imp = px.bar(dt_imp, x="Importance", y="Feature", orientation="h",
-                         color="Importance", color_continuous_scale="Purples",
-                         title="Decision Tree — Feature Importance (Top 15)")
-        fig_imp.update_layout(height=420, margin=dict(l=10,r=10,t=40,b=10),
-                              showlegend=False, coloraxis_showscale=False,
-                              yaxis=dict(autorange="reversed"))
-        st.plotly_chart(fig_imp, use_container_width=True)
-
-        # Decision rules text
-        st.markdown("### 📋 Decision Tree Rules — Human Readable")
-        feat_cols_list = metrics["feat_cols"]
-        tree_rules = export_text(dt_model, feature_names=feat_cols_list, max_depth=3)
-        st.code(tree_rules[:3000] + "\n... (truncated to depth 3)", language="text")
-
-        st.info("""
-**Business Interpretation:** The Decision Tree produces IF-THEN rules that are directly actionable.
-Each path from root to leaf represents a customer profile and their predicted purchase intent.
-Unlike Random Forest (black box), every rule here can be explained to business stakeholders.
-""")
-
-    # ── MULTI-MODEL COMPARISON ─────────────────────────────────────────────────
-    with adv_tab2:
-        st.markdown("### ⚔️ Multi-Model Comparison — All Classifiers Head-to-Head")
-        st.markdown("Comparing **6 classification algorithms** on the same test set to find the best predictor of purchase intent.")
-
-        model_names = ["Random Forest", "Decision Tree", "XGBoost", "SVM", "KNN", "Naive Bayes"]
-        model_keys  = ["rf", "dt", "xgbc", "svm", "knn", "nb"]
-
-        def get_m(key):
-            if key == "rf":
-                return {
-                    "acc": metrics["rf_acc"], "prec": metrics["rf_prec"],
-                    "rec": metrics["rf_rec"], "f1": metrics["rf_f1"],
-                    "auc": metrics["rf_auc"], "fpr": metrics["rf_fpr"],
-                    "tpr": metrics["rf_tpr"],
-                }
-            return metrics[key]
-
-        # Summary comparison table
-        rows = []
-        for name, key in zip(model_names, model_keys):
-            m = get_m(key)
-            rows.append({
-                "Model": name,
-                "Accuracy": round(m["acc"], 3),
-                "Precision": round(m["prec"], 3),
-                "Recall": round(m["rec"], 3),
-                "F1-Score": round(m["f1"], 3),
-                "ROC-AUC": round(m["auc"], 3),
-            })
-        comp_df = pd.DataFrame(rows).sort_values("ROC-AUC", ascending=False).reset_index(drop=True)
-        comp_df.index = comp_df.index + 1
-
-        st.dataframe(comp_df.style.highlight_max(
-            subset=["Accuracy","Precision","Recall","F1-Score","ROC-AUC"],
-            color="#1D3A2A"
-        ), use_container_width=True, height=260)
-
-        st.markdown("---")
-        col_a, col_b = st.columns(2)
-
-        with col_a:
-            # Grouped bar chart
-            metrics_to_plot = ["Accuracy", "Precision", "Recall", "F1-Score", "ROC-AUC"]
-            fig_bar = go.Figure()
-            colors = ["#7F77DD", "#1D9E75", "#EF9F27", "#D85A30", "#378ADD"]
-            for i, metric in enumerate(metrics_to_plot):
-                fig_bar.add_trace(go.Bar(
-                    name=metric,
-                    x=comp_df["Model"],
-                    y=comp_df[metric],
-                    marker_color=colors[i],
-                ))
-            fig_bar.update_layout(
-                barmode="group", title="Model Performance — All Metrics",
-                height=380, margin=dict(l=10,r=10,t=40,b=10),
-                yaxis=dict(range=[0, 1.05]),
-                legend=dict(orientation="h", y=-0.2)
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-        with col_b:
-            # ROC curves all models
-            fig_roc_all = go.Figure()
-            roc_colors = ["#7F77DD", "#1D9E75", "#EF9F27", "#D85A30", "#378ADD", "#888780"]
-            for (name, key), color in zip(zip(model_names, model_keys), roc_colors):
-                m = get_m(key)
-                fig_roc_all.add_trace(go.Scatter(
-                    x=m["fpr"], y=m["tpr"], mode="lines",
-                    name=f"{name} ({m['auc']:.3f})",
-                    line=dict(color=color, width=1.8)
-                ))
-            fig_roc_all.add_trace(go.Scatter(x=[0,1], y=[0,1], mode="lines",
-                name="Random", line=dict(color="gray", dash="dash", width=1)))
-            fig_roc_all.update_layout(
-                title="ROC Curves — All Models",
-                xaxis_title="False Positive Rate", yaxis_title="True Positive Rate",
-                height=380, margin=dict(l=10,r=10,t=40,b=10)
-            )
-            st.plotly_chart(fig_roc_all, use_container_width=True)
-
-        # Radar chart comparison
-        st.markdown("### 🕸️ Model Comparison — Radar Chart")
-        radar_metrics = ["Accuracy", "Precision", "Recall", "F1-Score", "ROC-AUC"]
-        fig_radar = go.Figure()
-        for i, row in comp_df.iterrows():
-            fig_radar.add_trace(go.Scatterpolar(
-                r=[row[m] for m in radar_metrics] + [row[radar_metrics[0]]],
-                theta=radar_metrics + [radar_metrics[0]],
-                fill="toself", name=row["Model"],
-                opacity=0.6,
-            ))
-        fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
-            title="Model Performance Radar — All 5 Metrics",
-            height=460, margin=dict(l=10,r=10,t=60,b=10)
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
-
-        # XGBoost feature importance
-        st.markdown("### 🚀 XGBoost Classifier — Top 15 Feature Importances")
-        xgbc_imp = metrics["xgbc_feat_imp"].head(15).reset_index()
-        xgbc_imp.columns = ["Feature", "Importance"]
-        fig_xgbc_imp = px.bar(xgbc_imp, x="Importance", y="Feature", orientation="h",
-                              color="Importance", color_continuous_scale="Oranges",
-                              title="XGBoost Classifier — Feature Importance")
-        fig_xgbc_imp.update_layout(height=420, margin=dict(l=10,r=10,t=40,b=10),
-                                   showlegend=False, coloraxis_showscale=False,
-                                   yaxis=dict(autorange="reversed"))
-        st.plotly_chart(fig_xgbc_imp, use_container_width=True)
-
-        st.info("""
-**Key Insight:** Random Forest and XGBoost consistently outperform simpler models (KNN, Naive Bayes)
-on this dataset, confirming that ensemble methods capture complex non-linear relationships
-in customer survey data better than single classifiers.
-SVM performs competitively, while Decision Tree offers the best interpretability vs accuracy trade-off.
-""")
-
-    # ── HIERARCHICAL CLUSTERING ────────────────────────────────────────────────
-    with adv_tab3:
-        st.markdown("### 🌿 Hierarchical Clustering — Agglomerative (Ward Linkage)")
-        st.markdown("""
-**Algorithm:** Agglomerative Hierarchical Clustering &nbsp;|&nbsp;
-**Linkage:** Ward (minimises within-cluster variance) &nbsp;|&nbsp;
-**K:** 5 clusters (same as K-Means for comparison) &nbsp;|&nbsp;
-**Session 6 coverage:** K-Means vs Hierarchical comparison
-""")
-
-        col_a, col_b = st.columns(2)
-
-        with col_a:
-            # Dendrogram using matplotlib → base64
-            st.markdown("#### Dendrogram — Ward Linkage (sample of 300 respondents)")
-            fig_dend, ax_dend = plt.subplots(figsize=(10, 5))
-            fig_dend.patch.set_facecolor("#0e1117")
-            ax_dend.set_facecolor("#0e1117")
-            dendrogram(
-                metrics["linkage_matrix"],
-                truncate_mode="level", p=5,
-                leaf_rotation=90, leaf_font_size=8,
-                color_threshold=0.7 * max(metrics["linkage_matrix"][:, 2]),
-                ax=ax_dend
-            )
-            ax_dend.set_title("Hierarchical Clustering Dendrogram", color="white", fontsize=12)
-            ax_dend.tick_params(colors="white")
-            ax_dend.spines["bottom"].set_color("#444")
-            ax_dend.spines["left"].set_color("#444")
-            for spine in ["top", "right"]:
-                ax_dend.spines[spine].set_visible(False)
-            ax_dend.set_xlabel("Respondent Samples", color="#888", fontsize=9)
-            ax_dend.set_ylabel("Ward Distance", color="#888", fontsize=9)
-            buf = io.BytesIO()
-            fig_dend.savefig(buf, format="png", bbox_inches="tight",
-                             facecolor=fig_dend.get_facecolor())
-            buf.seek(0)
-            st.image(buf, use_column_width=True)
-            plt.close(fig_dend)
-
-        with col_b:
-            # HC cluster size distribution
-            hc_series = pd.Series(metrics["hc_labels"])
-            hc_counts = hc_series.value_counts().sort_index().reset_index()
-            hc_counts.columns = ["Cluster", "Count"]
-            hc_counts["Cluster"] = hc_counts["Cluster"].map(
-                {i: f"Cluster {i+1}" for i in range(5)}
-            )
-            fig_hc_bar = px.bar(hc_counts, x="Cluster", y="Count",
-                                color="Count", color_continuous_scale="Teal",
-                                title="Hierarchical Clustering — Cluster Sizes")
-            fig_hc_bar.update_layout(height=340, margin=dict(l=10,r=10,t=40,b=10),
-                                     showlegend=False, coloraxis_showscale=False)
-            st.plotly_chart(fig_hc_bar, use_container_width=True)
-
-        # K-Means vs Hierarchical comparison
-        st.markdown("### 🔄 K-Means vs Hierarchical — Cluster Assignment Comparison")
-        st.markdown("Cross-tabulation showing how many respondents were assigned to the same vs different clusters by each method.")
-
-        km_labels = df["cluster"].values[:len(hc_labels)]
-        cross_tab = pd.crosstab(
-            pd.Series(km_labels[:len(hc_labels)], name="K-Means Cluster"),
-            pd.Series(hc_labels[:len(km_labels)], name="Hierarchical Cluster")
-        )
-        fig_cross = px.imshow(cross_tab, text_auto=True,
-                              color_continuous_scale="Purples", aspect="auto",
-                              title="Cross-Tabulation: K-Means vs Hierarchical Cluster Assignments")
-        fig_cross.update_layout(height=340, margin=dict(l=10,r=10,t=40,b=10))
-        st.plotly_chart(fig_cross, use_container_width=True)
-
-        # HC PCA scatter
-        st.markdown("### 📍 Hierarchical Clusters — PCA 2D View")
-        hc_plot_df = df.copy()
-        hc_plot_df["HC_Cluster"] = [f"HC-{l+1}" for l in hc_labels[:len(hc_plot_df)]]
-        fig_hc_pca = px.scatter(
-            hc_plot_df, x="pca_x", y="pca_y", color="HC_Cluster",
-            title="Hierarchical Clustering — PCA 2D Projection",
-            opacity=0.6, hover_data=["Q03_Region", "Q05_Monthly_Income"],
-            color_discrete_sequence=BRAND_COLORS,
-        )
-        fig_hc_pca.update_layout(height=420, margin=dict(l=10,r=10,t=40,b=10))
-        st.plotly_chart(fig_hc_pca, use_container_width=True)
-
-        st.info("""
-**Key Insight:** Hierarchical clustering does not require specifying K upfront —
-the dendrogram reveals the natural grouping structure. The cross-tabulation shows where
-K-Means and Hierarchical agree (diagonal) and disagree (off-diagonal),
-validating the robustness of the 5-segment finding from both methods.
-""")
-
-    # ── FORECASTING ────────────────────────────────────────────────────────────
-    with adv_tab4:
-        st.markdown("### 📈 Business Forecasting — Revenue & Demand Prediction")
-        st.caption("Session 7: Multilinear Regression + Time Series Forecasting | ULO-E: Apply forecasting innovatively")
-
-        st.markdown("#### 📊 Monthly Revenue Forecast — Based on Predicted Customer Spend")
-        st.markdown("Simulating monthly revenue trajectory using cohort-based spend predictions with growth assumptions.")
-
-        # Build monthly forecast from predicted spends
-        np.random.seed(42)
-        months = pd.date_range("2025-01", periods=18, freq="ME")
-        month_labels = [m.strftime("%b %Y") for m in months]
-
-        # Historical (12 months) — derived from dataset
-        avg_spend = df["pred_spend"].mean()
-        interested_count = int((df["target_class"] == 1).sum())
-        base_monthly = (avg_spend * interested_count) / 12
-
-        historical_revenue = []
-        for i in range(12):
-            noise = np.random.normal(0, base_monthly * 0.08)
-            seasonal = 1.0 + 0.3 * np.sin(2 * np.pi * i / 12)  # festival seasonality
-            historical_revenue.append(max(0, base_monthly * seasonal + noise))
-
-        # Forecast (6 months) — 20% growth target
-        forecast_revenue = []
-        last = historical_revenue[-1]
-        for i in range(6):
-            growth = 1 + 0.20/12 * (i+1)
-            seasonal = 1.0 + 0.3 * np.sin(2 * np.pi * (12 + i) / 12)
-            forecast_revenue.append(last * growth * seasonal)
-
-        # Confidence interval
-        upper = [v * 1.15 for v in forecast_revenue]
-        lower = [v * 0.85 for v in forecast_revenue]
-
-        fig_fc = go.Figure()
-        fig_fc.add_trace(go.Scatter(
-            x=month_labels[:12], y=historical_revenue,
-            mode="lines+markers", name="Historical Revenue",
-            line=dict(color="#7F77DD", width=2),
-            marker=dict(size=6)
-        ))
-        fig_fc.add_trace(go.Scatter(
-            x=month_labels[12:], y=forecast_revenue,
-            mode="lines+markers", name="Forecast (20% growth)",
-            line=dict(color="#EF9F27", width=2, dash="dash"),
-            marker=dict(size=7, symbol="diamond")
-        ))
-        fig_fc.add_trace(go.Scatter(
-            x=month_labels[12:] + month_labels[12:][::-1],
-            y=upper + lower[::-1],
-            fill="toself", fillcolor="rgba(239,159,39,0.15)",
-            line=dict(color="rgba(255,255,255,0)"),
-            name="85–115% Confidence Band", showlegend=True
-        ))
-        fig_fc.update_layout(
-            title="Monthly Revenue Forecast — Pitambari Brass (₹)",
-            xaxis_title="Month", yaxis_title="Revenue (₹)",
-            height=400, margin=dict(l=10,r=10,t=50,b=10),
-            legend=dict(orientation="h", y=-0.25),
-            yaxis_tickformat=",.0f",
-        )
-        st.plotly_chart(fig_fc, use_container_width=True)
-
-        # KPIs
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Avg Monthly Revenue (Hist)", f"₹{np.mean(historical_revenue):,.0f}")
-        k2.metric("Forecast Month 1", f"₹{forecast_revenue[0]:,.0f}")
-        k3.metric("Forecast Month 6", f"₹{forecast_revenue[5]:,.0f}")
-        k4.metric("Projected Growth", f"{((forecast_revenue[5]/historical_revenue[-1])-1)*100:.1f}%")
-
-        st.markdown("---")
-
-        # Segment-wise spend forecast
-        st.markdown("#### 👥 Persona-Wise Revenue Contribution Forecast")
-        persona_spend = df.groupby("persona")["pred_spend"].agg(["mean","count"]).reset_index()
-        persona_spend.columns = ["Persona", "Avg Spend", "Count"]
-        persona_spend["Annual Revenue"] = persona_spend["Avg Spend"] * persona_spend["Count"]
-        persona_spend["Monthly Revenue"] = persona_spend["Annual Revenue"] / 12
-        persona_spend = persona_spend.sort_values("Annual Revenue", ascending=False)
-
-        col_a, col_b = st.columns(2)
-        with col_a:
-            fig_ps = px.bar(persona_spend, x="Persona", y="Annual Revenue",
-                            color="Persona", color_discrete_map=PERSONA_COLORS,
-                            title="Annual Revenue by Customer Persona (₹)",
-                            text="Annual Revenue")
-            fig_ps.update_traces(texttemplate="₹%{text:,.0f}", textposition="outside")
-            fig_ps.update_layout(height=380, margin=dict(l=10,r=10,t=40,b=10),
-                                 showlegend=False, yaxis_tickformat=",.0f")
-            st.plotly_chart(fig_ps, use_container_width=True)
-
-        with col_b:
-            fig_pie = px.pie(persona_spend, names="Persona", values="Annual Revenue",
-                             color="Persona", color_discrete_map=PERSONA_COLORS,
-                             hole=0.4, title="Revenue Share by Persona")
-            fig_pie.update_layout(height=380, margin=dict(l=10,r=10,t=40,b=10))
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-        # Regression-based spend predictor
-        st.markdown("#### 🔮 Multilinear Regression — Spend Drivers")
-        st.markdown("Which features most strongly predict a customer's annual spend? Based on Ridge Regression coefficients.")
-
-        feat_cols_list = metrics["feat_cols"]
-        from sklearn.linear_model import Ridge
-        from sklearn.preprocessing import StandardScaler as SS
-        _sc = SS()
-        X_all = df[feat_cols_list].fillna(0)
-        y_spend = df["target_spend"] if "target_spend" in df.columns else df["pred_spend"]
-        _sc.fit(X_all)
-        X_sc_all = _sc.transform(X_all)
-        ridge_full = Ridge(alpha=1.0)
-        ridge_full.fit(X_sc_all, y_spend)
-
-        coef_df = pd.DataFrame({
-            "Feature": feat_cols_list,
-            "Coefficient": ridge_full.coef_
-        }).sort_values("Coefficient", key=abs, ascending=False).head(15)
-
-        coef_df["Direction"] = coef_df["Coefficient"].apply(
-            lambda x: "Positive (↑ Spend)" if x > 0 else "Negative (↓ Spend)"
-        )
-        fig_coef = px.bar(coef_df, x="Coefficient", y="Feature",
-                          orientation="h", color="Direction",
-                          color_discrete_map={"Positive (↑ Spend)": "#1D9E75", "Negative (↓ Spend)": "#D85A30"},
-                          title="Ridge Regression — Top 15 Spend Drivers (Standardised Coefficients)")
-        fig_coef.update_layout(height=460, margin=dict(l=10,r=10,t=40,b=10),
-                               yaxis=dict(autorange="reversed"))
-        st.plotly_chart(fig_coef, use_container_width=True)
-
-        st.info("""
-**Forecasting Summary (ULO-E):** \n
-- **Revenue forecast** uses cohort-based predictions with seasonal adjustment (festival peaks in Oct–Nov matching Diwali)
-- **20% annual growth target** is modelled month-by-month with confidence bands
-- **Ridge Regression** identifies the strongest spend drivers — income, RFM score, and puja frequency top the list
-- **Persona-level forecasting** shows Gifting Executives and Heritage Collectors drive the highest revenue per customer
-""")
-
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown(
     "<div style='text-align:center; color:#666; font-size:0.8rem;'>"
     "🪔 Pitambari Brass Analytics · Moradabad Heritage × Wellness × Premium Living · "
-    "Built with Streamlit, Scikit-Learn, XGBoost, MLxtend, SciPy & Plotly"
+    "Built with Streamlit, Scikit-Learn, XGBoost, MLxtend & Plotly"
     "</div>",
     unsafe_allow_html=True
 )
